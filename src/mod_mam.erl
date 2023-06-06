@@ -1029,7 +1029,7 @@ store_muc(MUCState, Pkt, RoomJID, Peer, Nick) ->
     end.
 
 store_mam_message(Pkt, U, S, Peer, Nick, Type, Dir) ->
-		?INFO_MSG("store_mam_messagestore_mam_messagestore_mam_messagestore_mam_message ---> ~p",[Dir]),
+		?INFO_MSG("store_mam_message ---> ~p",[Dir]),
     LServer = ejabberd_router:host_of_route(S),
     US = {U, S},
     ID = get_stanza_id(Pkt),

@@ -152,7 +152,6 @@ extended_fields() ->
 
 store(Pkt, LServer, {LUser, LHost}, Type, Peer, Nick, Dir, TS) ->
 		DirTxt = atom_to_binary(Dir),
-		?INFO_MSG("Dir is_atom() ~p  : ~p" ,[DirTxt, is_atom(DirTxt)]),
     SUser = case Type of
 		chat -> LUser;
 		groupchat -> jid:encode({LUser, LHost, <<>>})

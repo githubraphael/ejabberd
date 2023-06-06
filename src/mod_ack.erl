@@ -57,6 +57,9 @@ init_cache(Mod, Host, Opts) ->
   true.
 
 %%% 在线发送消息的时候，回执给发送消息的人员
+%%% 收到消息有正常的收发消息，也有客户端发送个服务端的ack消息；而这个ack消息是通过user_send_packet进来的。
+%%% 1.用户正常发送消息，服务端收到后；需要手动发送一个ack给客户端
+%%% 2.用户收到服务端的消息后，手动发送ack给服务端确认，实际上也是user_send_packet事件；只是这个事件比较特殊；服务器应该不进行转发。
 on_user_send_packet({#presence{to = To, from = From} = Packet, C2SState}) ->
 %%  ?INFO_MSG("mod_stanza_ack a presence has been sent coming from: ~p", [From]),
 %%  ?INFO_MSG("mod_stanza_ack a presence has been sent to: ~p", [To]),
