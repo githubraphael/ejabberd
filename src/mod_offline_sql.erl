@@ -44,6 +44,9 @@ init(_Host, _Opts) ->
     ok.
 
 store_message(#offline_msg{us = {LUser, LServer}} = M) ->
+	store_message(M, <<"Offline">>).
+
+store_message(#offline_msg{us = {LUser, LServer}} = M, LStatus) ->
     From = M#offline_msg.from,
     To = M#offline_msg.to,
     Packet = xmpp:set_from_to(M#offline_msg.packet, From, To),
@@ -59,6 +62,7 @@ store_message(#offline_msg{us = {LUser, LServer}} = M) ->
               "spool",
               ["username=%(LUser)s",
                "server_host=%(LServer)s",
+							 "status=%(LStatus)s",
                "xml=%(XML)s"])) of
 	{updated, _} ->
 	    ok;
@@ -293,14 +297,22 @@ el_to_offline_msg(El) ->
 
 get_and_del_spool_msg_t(LServer, LUser) ->
     F = fun () ->
-		Result =
-		    ejabberd_sql:sql_query_t(
-                      ?SQL("select @(username)s, @(xml)s from spool where "
-                           "username=%(LUser)s and %(LServer)H order by seq;")),
-		DResult =
-		    ejabberd_sql:sql_query_t(
-                      ?SQL("delete from spool where"
-                           " username=%(LUser)s and %(LServer)H;")),
+%%		Result =
+%%		    ejabberd_sql:sql_query_t(
+%%                      ?SQL("select @(username)s, @(xml)s from spool where "
+%%                           "username=%(LUser)s and %(LServer)H order by seq;")),
+%%		DResult =
+%%		    ejabberd_sql:sql_query_t(
+%%                      ?SQL("delete from spool where"
+%%                           " username=%(LUser)s and %(LServer)H;")),
+			Result =
+				ejabberd_sql:sql_query_t(
+					?SQL("select @(username)s, @(xml)s from spool where "
+					"username=%(LUser)s and %(LServer)H and status = 'Offline' order by seq;")),
+			DResult =
+				ejabberd_sql:sql_query_t(
+					?SQL("update spool set"
+					" status = 'Forwarded' where username=%(LUser)s and %(LServer)H and status = 'Offline'; ")),
 		case {Result, DResult} of
 		    {{selected, Rs}, {updated, DC}} when length(Rs) /= DC ->
 			ejabberd_sql:restart(concurent_insert);

@@ -449,7 +449,7 @@ offline_message({_Action, #message{from = Peer, to = To} = Pkt} = Acc) ->
     LServer = To#jid.lserver,
     case should_archive(Pkt, LServer) of
        true ->
-	   case store_msg(Pkt, LUser, LServer, Peer, recv) of
+	   case store_msg(Pkt, LUser, LServer, Peer, recvoffline) of
 	       ok ->
 		   {archived, mark_stored_msg(Pkt, To)};
 	       _ ->
@@ -987,7 +987,7 @@ may_enter_room(From,
 may_enter_room(From, MUCState) ->
     mod_muc_room:is_occupant_or_admin(From, MUCState).
 
--spec store_msg(message(), binary(), binary(), jid(), send | recv)
+-spec store_msg(message(), binary(), binary(), jid(), send | recv | recvoffline)
       -> ok | pass | any().
 store_msg(Pkt, LUser, LServer, Peer, Dir) ->
     case get_prefs(LUser, LServer) of
@@ -1029,6 +1029,7 @@ store_muc(MUCState, Pkt, RoomJID, Peer, Nick) ->
     end.
 
 store_mam_message(Pkt, U, S, Peer, Nick, Type, Dir) ->
+		?INFO_MSG("store_mam_messagestore_mam_messagestore_mam_messagestore_mam_message ---> ~p",[Dir]),
     LServer = ejabberd_router:host_of_route(S),
     US = {U, S},
     ID = get_stanza_id(Pkt),
