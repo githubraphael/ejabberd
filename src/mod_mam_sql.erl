@@ -150,7 +150,9 @@ delete_old_messages(ServerHost, TimeStamp, Type) ->
 extended_fields() ->
     [{withtext, <<"">>}].
 
-store(Pkt, LServer, {LUser, LHost}, Type, Peer, Nick, _Dir, TS) ->
+store(Pkt, LServer, {LUser, LHost}, Type, Peer, Nick, Dir, TS) ->
+		DirTxt = atom_to_binary(Dir),
+		?INFO_MSG("Dir is_atom() ~p  : ~p" ,[DirTxt, is_atom(DirTxt)]),
     SUser = case Type of
 		chat -> LUser;
 		groupchat -> jid:encode({LUser, LHost, <<>>})
@@ -186,7 +188,9 @@ store(Pkt, LServer, {LUser, LHost}, Type, Peer, Nick, _Dir, TS) ->
 	               "xml=N%(XML)s",
 	               "txt=N%(Body)s",
 	               "kind=%(SType)s",
-	               "nick=%(Nick)s"])) of
+	               "nick=%(Nick)s",
+	               "dir=%(DirTxt)s",
+									"status='Unchecked'"])) of
 		{updated, _} ->
 		    ok;
 		Err ->
@@ -204,7 +208,9 @@ store(Pkt, LServer, {LUser, LHost}, Type, Peer, Nick, _Dir, TS) ->
 	               "xml=%(XML)s",
 	               "txt=%(Body)s",
 	               "kind=%(SType)s",
-	               "nick=%(Nick)s"])) of
+	               "nick=%(Nick)s",
+									"dir=%(DirTxt)s",
+									"status='Unchecked'"])) of
 		{updated, _} ->
 		    ok;
 		Err ->
