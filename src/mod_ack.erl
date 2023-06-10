@@ -4,6 +4,7 @@
 
 -module(mod_ack).
 
+-import(str, [chr/2]).
 -author('simpleman1984@126.com').
 
 -protocol({xep, 13, '1.2', '16.02', "", ""}).
@@ -70,45 +71,51 @@ on_user_send_packet({#iq{to = To, from = From} = Packet, C2SState}) ->
 %%  ?INFO_MSG("mod_stanza_ack a iq has been sent to: ~p", [To]),
   ?INFO_MSG("mod_stanza_ack a iq has been sent with the following packet:~n ~p", [fxml:element_to_binary(xmpp:encode(Packet))]),
   {Packet, C2SState};
-on_user_send_packet({#message{to = To, from = From, type = Type} = Packet, C2SState}) ->
+on_user_send_packet({#message{to = To, from = From, type = Type, id = ID, body = Body} = Packet, C2SState}) ->
 %%  ?INFO_MSG("mod_stanza_ack a message has been sent coming from: ~p", [From]),
 %%  ?INFO_MSG("mod_stanza_ack a message has been sent to: ~p", [To]),
   ?INFO_MSG("mod_stanza_ack a message has been sent with the following packet:~n ~p", [fxml:element_to_binary(xmpp:encode(Packet))]),
   %%% 给消息发送人，发送消息回执
-  To2 = jid:encode(From),
-  From2 = list_to_binary("1000@localhost"),
-  Type2 = atom_to_binary(Type),
-  CodecOpts = ejabberd_config:codec_options(),
-  try
-    xmpp:decode(
-      #xmlel{
-        name = <<"message">>,
-        attrs = [
-          {<<"to">>, To2},
-          {<<"from">>, From2},
-          {<<"type">>, Type2},
-          {<<"id">>, p1_rand:get_string()}
-        ],
-        children =
-        [
+  BodyTxt = xmpp:get_text(Body),
+  case chr(BodyTxt, ${) == 1 of
+    %% 服务端接收到普通消息，发送ack消息
+    true ->
+      To2 = jid:encode(From),
+      From2 = list_to_binary("1000@localhost"),
+      Type2 = atom_to_binary(Type),
+      CodecOpts = ejabberd_config:codec_options(),
+      try
+        xmpp:decode(
           #xmlel{
-            name = <<"action">>,
-            children = [{xmlcdata, <<"ServerReceived">>}]
-          }
-        ]
-      },
-      ?NS_CLIENT,
-      CodecOpts
-    )
-  of
-    Msg ->
-      ?INFO_MSG("Acked to Sending Side: Xml -> ~p -> ", [
-        fxml:element_to_binary(xmpp:encode(Msg))
-      ]),
-      ejabberd_router:route(Msg)
-  catch
-    _:{xmpp_codec, Why} ->
-      {error, xmpp:format_error(Why)}
+            name = <<"message">>,
+            attrs = [
+              {<<"to">>, To2},
+              {<<"from">>, From2},
+              {<<"type">>, Type2},
+              {<<"id">>, ID}
+            ],
+            children =
+            [
+              #xmlel{
+                name = <<"body">>,
+                children = [{xmlcdata, list_to_binary(["k",ID])}]
+              }
+            ]
+          },
+          ?NS_CLIENT,
+          CodecOpts
+        )
+      of
+        Msg ->
+          ?INFO_MSG("Acked to Sending Side: Xml -> ~p -> ", [
+            fxml:element_to_binary(xmpp:encode(Msg))
+          ]),
+          ejabberd_router:route(Msg)
+      catch
+        _:{xmpp_codec, Why} ->
+          {error, xmpp:format_error(Why)}
+      end;
+    _ -> ?INFO_MSG("current message is not valid message.", [])
   end,
   {Packet, C2SState}.
 
