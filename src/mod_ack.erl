@@ -100,7 +100,8 @@ on_user_send_packet({#message{to = To, from = From, type = Type, id = ID, body =
       To2 = jid:encode(From),
       From2 = list_to_binary("1000@localhost"),
       %% 即使为群消息，也是通过1对1消息，发送确认
-      Type2 = <<"chat">>;%%atom_to_binary(Type),
+      Type2 = <<"chat">>,
+      %%atom_to_binary(Type)
       CodecOpts = ejabberd_config:codec_options(),
       try
         xmpp:decode(
