@@ -99,7 +99,8 @@ on_user_send_packet({#message{to = To, from = From, type = Type, id = ID, body =
     true ->
       To2 = jid:encode(From),
       From2 = list_to_binary("1000@localhost"),
-      Type2 = atom_to_binary(Type),
+      %% 即使为群消息，也是通过1对1消息，发送确认
+      Type2 = <<"chat">>;%%atom_to_binary(Type),
       CodecOpts = ejabberd_config:codec_options(),
       try
         xmpp:decode(
@@ -124,8 +125,8 @@ on_user_send_packet({#message{to = To, from = From, type = Type, id = ID, body =
         )
       of
         Msg ->
-          ?INFO_MSG("Acked to Sending Side: Xml -> ~p -> ", [
-            fxml:element_to_binary(xmpp:encode(Msg))
+          ?INFO_MSG("Acked to Sending Side: Xml -> ~p -> To: ~p", [
+            fxml:element_to_binary(xmpp:encode(Msg)), To
           ]),
           ejabberd_router:route(Msg)
       catch
