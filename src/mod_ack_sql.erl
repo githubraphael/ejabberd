@@ -28,6 +28,7 @@
 -behaviour(mod_message_ack).
 
 -export([init/2]).
+-export([add_event/5]).
 
 -include_lib("xmpp/include/xmpp.hrl").
 -include("logger.hrl").
@@ -39,3 +40,23 @@
 init(_Host, _Opts) ->
     ok.
 
+%%% 日志信息， ip,event,account,time
+%%% 登录失败，登录成功，重试次数
+add_event(LServer, User, Ip, Event, Time) ->
+%%    ?INFO_MSG("add_eventadd_eventadd_eventadd_eventadd_event", []),
+    ejabberd_sql:sql_query(
+        LServer,
+        ?SQL_INSERT(
+            "user_events",
+            ["user=%(User)s",
+            "ip=%(Ip)s",
+            "event=%(Event)s",
+            "timestamp=%(Time)d"])).
+
+remove_all_events(LUser, LServer) ->
+    ejabberd_sql:sql_query(
+        LServer,
+        ?SQL("delete from archive where username=%(LUser)s and %(LServer)H")),
+    ejabberd_sql:sql_query(
+        LServer,
+        ?SQL("delete from archive_prefs where username=%(LUser)s and %(LServer)H")).

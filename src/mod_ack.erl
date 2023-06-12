@@ -15,12 +15,13 @@
 
 -behaviour(gen_mod).
 
--export([start/2,
-  stop/1,
-  reload/3]).
+-export([start/2, stop/1, reload/3, c2s_auth_result/3,
+  c2s_stream_started/2]).
 
 -export([mod_opt_type/1, mod_options/1, mod_doc/0, depends/2]).
--export([on_user_send_packet/1]).
+-export([on_user_send_packet/1, reject_unauthenticated_packet/2, process_terminated/2]).
+
+-export([init/1, terminate/2]).
 
 -include("logger.hrl").
 -include_lib("xmpp/include/xmpp.hrl").
@@ -32,17 +33,33 @@
 -define(MAX_USER_MESSAGES, infinity).
 -define(SPOOL_COUNTER_CACHE, offline_msg_counter_cache).
 
+-record(state, {host = <<"">> :: binary()}).
+-type state() :: xmpp_stream_in:state().
+-export_type([state/0]).
+
 depends(_Host, _Opts) ->
   [].
 
 start(Host, Opts) ->
-%%  Mod = gen_mod:db_mod(Opts, ?MODULE),
-%%  Mod:init(Host, Opts),
+  Mod = gen_mod:db_mod(Opts, ?MODULE),
+  Mod:init(Host, Opts),
 %%  init_cache(Mod, Host, Opts),
-  ejabberd_hooks:add(user_send_packet, Host, ?MODULE, on_user_send_packet, 0).
+  ejabberd_hooks:add(user_send_packet, Host, ?MODULE, on_user_send_packet, 0),
+  ejabberd_hooks:add(c2s_auth_result, Host, ?MODULE, c2s_auth_result, 100),
+  ejabberd_hooks:add(c2s_stream_started, Host, ?MODULE, c2s_stream_started, 100),
+  ejabberd_hooks:add(c2s_terminated, Host, ?MODULE, process_terminated, 100),
+  ejabberd_hooks:add(c2s_unauthenticated_packet, Host, ?MODULE, reject_unauthenticated_packet, 100).
+%%  gen_mod:start_child(?MODULE, Host, Opts).
 
 stop(Host) ->
-  ejabberd_hooks:delete(user_send_packet, Host, ?MODULE, on_user_send_packet, 0).
+  ejabberd_hooks:delete(user_send_packet, Host, ?MODULE, on_user_send_packet, 0),
+  ejabberd_hooks:delete(c2s_auth_result, Host, ?MODULE, c2s_auth_result, 100),
+  ejabberd_hooks:delete(c2s_stream_started, Host, ?MODULE, c2s_stream_started, 100),
+  ejabberd_hooks:delete(c2s_terminated, Host, ?MODULE,
+    process_terminated, 100),
+  ejabberd_hooks:delete(c2s_unauthenticated_packet, Host, ?MODULE,
+    reject_unauthenticated_packet, 100).
+%%  gen_mod:stop_child(?MODULE, Host).
 
 reload(Host, NewOpts, OldOpts) ->
   NewMod = gen_mod:db_mod(NewOpts, ?MODULE),
@@ -62,19 +79,19 @@ init_cache(Mod, Host, Opts) ->
 %%% 1.用户正常发送消息，服务端收到后；需要手动发送一个ack给客户端
 %%% 2.用户收到服务端的消息后，手动发送ack给服务端确认，实际上也是user_send_packet事件；只是这个事件比较特殊；服务器应该不进行转发。
 on_user_send_packet({#presence{to = To, from = From} = Packet, C2SState}) ->
-%%  ?INFO_MSG("mod_stanza_ack a presence has been sent coming from: ~p", [From]),
-%%  ?INFO_MSG("mod_stanza_ack a presence has been sent to: ~p", [To]),
-  ?INFO_MSG("mod_stanza_ack a presence has been sent with the following packet:~n ~p", [fxml:element_to_binary(xmpp:encode(Packet))]),
+%%  ?DEBUG("mod_stanza_ack a presence has been sent coming from: ~p", [From]),
+%%  ?DEBUG("mod_stanza_ack a presence has been sent to: ~p", [To]),
+  ?DEBUG("mod_stanza_ack a presence has been sent with the following packet:~n ~p", [fxml:element_to_binary(xmpp:encode(Packet))]),
   {Packet, C2SState};
 on_user_send_packet({#iq{to = To, from = From} = Packet, C2SState}) ->
-%%  ?INFO_MSG("mod_stanza_ack a iq has been sent coming from: ~p", [From]),
-%%  ?INFO_MSG("mod_stanza_ack a iq has been sent to: ~p", [To]),
-  ?INFO_MSG("mod_stanza_ack a iq has been sent with the following packet:~n ~p", [fxml:element_to_binary(xmpp:encode(Packet))]),
+%%  ?DEBUG("mod_stanza_ack a iq has been sent coming from: ~p", [From]),
+%%  ?DEBUG("mod_stanza_ack a iq has been sent to: ~p", [To]),
+  ?DEBUG("mod_stanza_ack a iq has been sent with the following packet:~n ~p", [fxml:element_to_binary(xmpp:encode(Packet))]),
   {Packet, C2SState};
 on_user_send_packet({#message{to = To, from = From, type = Type, id = ID, body = Body} = Packet, C2SState}) ->
-%%  ?INFO_MSG("mod_stanza_ack a message has been sent coming from: ~p", [From]),
-%%  ?INFO_MSG("mod_stanza_ack a message has been sent to: ~p", [To]),
-  ?INFO_MSG("mod_stanza_ack a message has been sent with the following packet:~n ~p", [fxml:element_to_binary(xmpp:encode(Packet))]),
+%%  ?DEBUG("mod_stanza_ack a message has been sent coming from: ~p", [From]),
+%%  ?DEBUG("mod_stanza_ack a message has been sent to: ~p", [To]),
+  ?DEBUG("mod_stanza_ack a message has been sent with the following packet:~n ~p", [fxml:element_to_binary(xmpp:encode(Packet))]),
   %%% 给消息发送人，发送消息回执
   BodyTxt = xmpp:get_text(Body),
   case chr(BodyTxt, ${) == 1 of
@@ -98,7 +115,7 @@ on_user_send_packet({#message{to = To, from = From, type = Type, id = ID, body =
             [
               #xmlel{
                 name = <<"body">>,
-                children = [{xmlcdata, list_to_binary(["k",ID])}]
+                children = [{xmlcdata, list_to_binary(["k", ID])}]
               }
             ]
           },
@@ -119,11 +136,105 @@ on_user_send_packet({#message{to = To, from = From, type = Type, id = ID, body =
   end,
   {Packet, C2SState}.
 
-mod_opt_type(access_max_user_messages) ->
+%%%===================================================================
+%%% gen_server callbacks
+%%%===================================================================
+%%% 此处的很多逻辑，都是参考的 mod_fail2ban。
+init([Host | _]) ->
+  process_flag(trap_exit, true),
+  ejabberd_hooks:add(c2s_auth_result, Host, ?MODULE, c2s_auth_result, 100),
+  ejabberd_hooks:add(c2s_stream_started, Host, ?MODULE, c2s_stream_started, 100).
+
+terminate(_Reason, #state{host = Host}) ->
+  ejabberd_hooks:delete(c2s_auth_result, Host, ?MODULE, c2s_auth_result, 100),
+  ejabberd_hooks:delete(c2s_stream_started, Host, ?MODULE, c2s_stream_started, 100),
+  case gen_mod:is_loaded_elsewhere(Host, ?MODULE) of
+    true ->
+      ok;
+    false ->
+      ets:delete(failed_auth)
+  end.
+
+%%%===================================================================
+%%% Internal functions
+%%%===================================================================
+%%% 开始处理和连接相关的日志问题
+%%%===================================================================
+%%% API
+%%%===================================================================
+-spec c2s_auth_result(ejabberd_c2s:state(), true | {false, binary()}, binary())
+      -> ejabberd_c2s:state() | {stop, ejabberd_c2s:state()}.
+c2s_auth_result(#{sasl_mech := Mech} = State, {false, _}, _User)
+  when Mech == <<"EXTERNAL">> ->
+  State;
+c2s_auth_result(#{ip := {Addr, _}, lserver := LServer} = State, {false, _}, _User) ->
+  Mod = gen_mod:db_mod(LServer, ?MODULE),
+  Mod:add_event(LServer, list_to_binary([_User,<<"@">>,LServer]), client_info(State, Addr), <<"auth failed">>, integer_to_binary(current_time())),
+  State;
+c2s_auth_result(#{ip := {Addr, _},lserver := LServer} = State, true, _User) ->
+  Mod = gen_mod:db_mod(LServer, ?MODULE),
+  Mod:add_event(LServer, list_to_binary([_User,<<"@">>,LServer]), client_info(State, Addr), <<"auth successed">>, integer_to_binary(current_time())),
+  State.
+%% 连接被拒绝
+reject_unauthenticated_packet(#{ip := {Addr, _}, lserver := LServer} = State, _Pkt) ->
+  Time = current_time(),
+  Mod = gen_mod:db_mod(LServer, ?MODULE),
+  Mod:add_event(LServer, list_to_binary([LServer]), client_info(State, Addr), <<"auth rejected">>, integer_to_binary(Time)).
+
+client_info(State, Addr) ->
+  TCP = case maps:find(socket, State) of
+          {ok, Socket} -> xmpp_socket:pp(Socket);
+          _ -> <<"unknown">>
+        end,
+  IP = misc:ip_to_list(Addr),
+  list_to_binary([TCP, IP]).
+
+current_time() ->
+  erlang:system_time(millisecond).
+
+%% 消息的格式化
+-spec format_reason(state(), term()) -> binary().
+format_reason(#{stop_reason := Reason}, _) ->
+  xmpp_stream_in:format_error(Reason);
+format_reason(_, normal) ->
+  <<"unknown reason">>;
+format_reason(_, shutdown) ->
+  <<"stopped by supervisor">>;
+format_reason(_, {shutdown, _}) ->
+  <<"stopped by supervisor">>;
+format_reason(_, _) ->
+  <<"internal server error">>.
+
+-spec c2s_stream_started(ejabberd_c2s:state(), stream_start())
+      -> ejabberd_c2s:state() | {stop, ejabberd_c2s:state()}.
+c2s_stream_started(#{ip := {Addr, _}, lserver := LServer} = State, Stream2) ->
+  Mod = gen_mod:db_mod(LServer, ?MODULE),
+  Time = current_time(),
+  Mod:add_event(LServer, LServer, client_info(State, Addr), <<"stream_started">>, integer_to_binary(Time)),
+  State.
+
+process_terminated(#{ip := {Addr, _}, sid := SID, jid := JID, user := U, server := S, resource := R} = State,
+    Reason) ->
+  Status = format_reason(State, Reason),
+  Time = current_time(),
+  Mod = gen_mod:db_mod(S, ?MODULE),
+  Mod:add_event(S, jid:encode(JID), client_info(State, Addr), list_to_binary([<<"stream_ended ">>, Status]), integer_to_binary(Time)),
+  State;
+process_terminated(#{stop_reason := {tls, _}} = State, Reason) ->
+  ?WARNING_MSG("(~ts) Failed to secure c2s connection: ~ts",
+    [case maps:find(socket, State) of
+       {ok, Socket} -> xmpp_socket:pp(Socket);
+       _ -> <<"unknown">>
+     end, format_reason(State, Reason)]),
+  State;
+process_terminated(State, _Reason) ->
+  State.
+
+mod_opt_type(db_type) ->
   econf:shaper().
 
 mod_options(_Host) ->
-  [{access_max_user_messages, max_user_offline_messages}].
+  [{db_type, db_type}].
 
 mod_doc() ->
   #{
