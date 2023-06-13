@@ -15,12 +15,11 @@
 
 -behaviour(gen_mod).
 
--export([start/2, stop/1, reload/3, c2s_auth_result/3,
-  c2s_stream_started/2]).
+-export([start/2, stop/1, reload/3, c2s_auth_result/3, c2s_stream_started/2]).
 
 -export([mod_opt_type/1, mod_options/1, mod_doc/0, depends/2]).
 -export([on_user_send_packet/1, reject_unauthenticated_packet/2, process_terminated/2]).
-
+-export([c2s_session_opened/1, c2s_session_resumed/1,c2s_handle_info/2]).
 -export([init/1, terminate/2]).
 
 -include("logger.hrl").
@@ -30,10 +29,9 @@
 -include("translate.hrl").
 
 %% default value for the maximum number of user messages
--define(MAX_USER_MESSAGES, infinity).
--define(SPOOL_COUNTER_CACHE, offline_msg_counter_cache).
 
 -record(state, {host = <<"">> :: binary()}).
+-type c2s_state() :: ejabberd_c2s:state().
 -type state() :: xmpp_stream_in:state().
 -export_type([state/0]).
 
@@ -44,16 +42,28 @@ start(Host, Opts) ->
   Mod = gen_mod:db_mod(Opts, ?MODULE),
   Mod:init(Host, Opts),
 %%  init_cache(Mod, Host, Opts),
+  %% 回调相关的代码
   ejabberd_hooks:add(user_send_packet, Host, ?MODULE, on_user_send_packet, 0),
   ejabberd_hooks:add(c2s_auth_result, Host, ?MODULE, c2s_auth_result, 100),
+  %% 日志相关的代码
+  ejabberd_hooks:add(c2s_session_opened, Host, ?MODULE, c2s_session_opened, 51),
+  ejabberd_hooks:add(c2s_session_resumed, Host, ?MODULE, c2s_session_resumed, 50),
+  ejabberd_hooks:add(forbidden_session_hook, Host, ?MODULE, forbidden_session_hook, 100),
+  ejabberd_hooks:add(c2s_handle_info, Host, ?MODULE, c2s_handle_info, 50),
   ejabberd_hooks:add(c2s_stream_started, Host, ?MODULE, c2s_stream_started, 100),
   ejabberd_hooks:add(c2s_terminated, Host, ?MODULE, process_terminated, 100),
   ejabberd_hooks:add(c2s_unauthenticated_packet, Host, ?MODULE, reject_unauthenticated_packet, 100).
 %%  gen_mod:start_child(?MODULE, Host, Opts).
 
 stop(Host) ->
+  %% 回调相关的代码
   ejabberd_hooks:delete(user_send_packet, Host, ?MODULE, on_user_send_packet, 0),
   ejabberd_hooks:delete(c2s_auth_result, Host, ?MODULE, c2s_auth_result, 100),
+  %% 日志相关的代码
+  ejabberd_hooks:delete(c2s_session_opened, Host, ?MODULE, c2s_session_opened, 51),
+  ejabberd_hooks:delete(c2s_session_resumed, Host, ?MODULE, c2s_session_resumed, 50),
+  ejabberd_hooks:delete(forbidden_session_hook, Host, ?MODULE, forbidden_session_hook, 100),
+  ejabberd_hooks:delete(c2s_handle_info, Host, ?MODULE, c2s_handle_info, 50),
   ejabberd_hooks:delete(c2s_stream_started, Host, ?MODULE, c2s_stream_started, 100),
   ejabberd_hooks:delete(c2s_terminated, Host, ?MODULE,
     process_terminated, 100),
@@ -134,7 +144,7 @@ on_user_send_packet({#message{to = To, from = From, type = Type, id = ID, body =
         _:{xmpp_codec, Why} ->
           {error, xmpp:format_error(Why)}
       end;
-    _ -> ?INFO_MSG("current message is not valid message.", [])
+    _ -> ?DEBUG("current message is not valid message.", [])
   end,
   {Packet, C2SState}.
 
@@ -171,17 +181,71 @@ c2s_auth_result(#{sasl_mech := Mech} = State, {false, _}, _User)
   State;
 c2s_auth_result(#{ip := {Addr, _}, lserver := LServer} = State, {false, _}, _User) ->
   Mod = gen_mod:db_mod(LServer, ?MODULE),
-  Mod:add_event(LServer, list_to_binary([_User,<<"@">>,LServer]), client_info(State, Addr), <<"auth failed">>, integer_to_binary(current_time())),
+  Mod:add_event(LServer, list_to_binary([_User, <<"@">>, LServer]), client_info(State, Addr), <<"Auth failed">>, integer_to_binary(current_time())),
   State;
-c2s_auth_result(#{ip := {Addr, _},lserver := LServer} = State, true, _User) ->
+c2s_auth_result(#{ip := {Addr, _}, lserver := LServer} = State, true, _User) ->
   Mod = gen_mod:db_mod(LServer, ?MODULE),
-  Mod:add_event(LServer, list_to_binary([_User,<<"@">>,LServer]), client_info(State, Addr), <<"auth successed">>, integer_to_binary(current_time())),
+  Mod:add_event(LServer, list_to_binary([_User, <<"@">>, LServer]), client_info(State, Addr), <<"Auth successed">>, integer_to_binary(current_time())),
   State.
 %% 连接被拒绝
 reject_unauthenticated_packet(#{ip := {Addr, _}, lserver := LServer} = State, _Pkt) ->
   Time = current_time(),
   Mod = gen_mod:db_mod(LServer, ?MODULE),
-  Mod:add_event(LServer, list_to_binary([LServer]), client_info(State, Addr), <<"auth rejected">>, integer_to_binary(Time)).
+  Mod:add_event(LServer, list_to_binary([LServer]), client_info(State, Addr), <<"Auth rejected">>, integer_to_binary(Time)).
+
+%% 授权通过
+-spec c2s_session_opened(c2s_state()) -> c2s_state().
+c2s_session_opened(#{ip := {Addr, _},user := U, server := LServer, resource := R} = State) ->
+  JID = jid:make(U, LServer, R),
+  Time = current_time(),
+  Mod = gen_mod:db_mod(LServer, ?MODULE),
+  Mod:add_event(LServer, list_to_binary([jid:encode(JID)]), client_info(State, Addr), <<"C2s session opened">>, integer_to_binary(Time)),
+  State;
+c2s_session_opened(State) ->
+  State.
+
+c2s_session_resumed(#{ip := {Addr, _}, user := U, server := LServer, resource := R} = State) ->
+  JID = jid:make(U, LServer, R),
+  Time = current_time(),
+  Mod = gen_mod:db_mod(LServer, ?MODULE),
+  Mod:add_event(LServer, list_to_binary([jid:encode(JID)]), client_info(State, Addr), <<"C2s session resumed">>, integer_to_binary(Time)),
+  State.
+
+forbidden_session_hook(#{ip := {Addr, _}, user := U, server := LServer, resource := R} = State) ->
+  JID = jid:make(U, LServer, R),
+  Time = current_time(),
+  Mod = gen_mod:db_mod(LServer, ?MODULE),
+  Mod:add_event(LServer, list_to_binary([jid:encode(JID)]), client_info(State, Addr), <<"C2s session forbidden">>, integer_to_binary(Time))
+  .
+
+c2s_handle_info(#{mgmt_ack_timer := TRef,server := LServer,ip := {Addr, _}, jid := JID, mod := Mod} = State,
+    {timeout, TRef, ack_timeout}) ->
+  Time = current_time(),
+  Mod = gen_mod:db_mod(LServer, ?MODULE),
+  Mod:add_event(LServer, list_to_binary([jid:encode(JID)]), client_info(State, Addr), <<"Timed out waiting for stream management acknowledgement">>, integer_to_binary(Time)),
+  {stop, State};
+c2s_handle_info(#{mgmt_state := pending, lang := Lang,server := LServer,
+  mgmt_pending_timer := TRef,ip := {Addr, _}, jid := JID, mod := Mod} = State,
+    {timeout, TRef, pending_timeout}) ->
+  Time = current_time(),
+  Mod = gen_mod:db_mod(LServer, ?MODULE),
+  Mod:add_event(LServer, list_to_binary([jid:encode(JID)]), client_info(State, Addr), <<"Timed out waiting for resumption of stream">>, integer_to_binary(Time)),
+  {stop, State};
+c2s_handle_info(State, {_Ref, {resume, #{ip := {Addr, _},jid := JID,server := LServer} = OldState}}) ->
+  %% This happens if the resume_session/1 request timed out; the new session
+  %% now receives the late response.
+  Time = current_time(),
+  Mod = gen_mod:db_mod(LServer, ?MODULE),
+  Mod:add_event(LServer, list_to_binary([jid:encode(JID)]), client_info(State, Addr), <<"Timed out waiting for resumption of stream">>, integer_to_binary(Time)),
+  {stop, State};
+c2s_handle_info(State, {timeout, _, Timeout}) when Timeout == ack_timeout;
+  Timeout == pending_timeout ->
+  %% Late arrival of an already cancelled timer: we just ignore it.
+  %% This might happen because misc:cancel_timer/1 doesn't guarantee
+  %% timer cancellation in the case when p1_server is used.
+  {stop, State};
+c2s_handle_info(State, _) ->
+  State.
 
 client_info(State, Addr) ->
   TCP = case maps:find(socket, State) of
@@ -209,10 +273,10 @@ format_reason(_, _) ->
 
 -spec c2s_stream_started(ejabberd_c2s:state(), stream_start())
       -> ejabberd_c2s:state() | {stop, ejabberd_c2s:state()}.
-c2s_stream_started(#{ip := {Addr, _}, lserver := LServer} = State, Stream2) ->
+c2s_stream_started(#{ip := {Addr, _}, user := User,stream_authenticated := Authenticated, lserver := LServer} = State, Stream2) ->
   Mod = gen_mod:db_mod(LServer, ?MODULE),
   Time = current_time(),
-  Mod:add_event(LServer, LServer, client_info(State, Addr), <<"stream_started">>, integer_to_binary(Time)),
+  Mod:add_event(LServer, list_to_binary([User,<<"@">>,LServer]), client_info(State, Addr), list_to_binary([<<"Stream started -> Authenticated:">>,atom_to_binary(Authenticated)]), integer_to_binary(Time)),
   State.
 
 process_terminated(#{ip := {Addr, _}, sid := SID, jid := JID, user := U, server := S, resource := R} = State,
@@ -220,7 +284,7 @@ process_terminated(#{ip := {Addr, _}, sid := SID, jid := JID, user := U, server 
   Status = format_reason(State, Reason),
   Time = current_time(),
   Mod = gen_mod:db_mod(S, ?MODULE),
-  Mod:add_event(S, jid:encode(JID), client_info(State, Addr), list_to_binary([<<"stream_ended ">>, Status]), integer_to_binary(Time)),
+  Mod:add_event(S, jid:encode(JID), client_info(State, Addr), list_to_binary([<<"Closing c2s session ->">>, Status]), integer_to_binary(Time)),
   State;
 process_terminated(#{stop_reason := {tls, _}} = State, Reason) ->
   ?WARNING_MSG("(~ts) Failed to secure c2s connection: ~ts",
