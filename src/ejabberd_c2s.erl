@@ -451,7 +451,7 @@ bind(R, #{user := U, server := S, access := Access, lang := Lang,
 			      [xmpp_socket:pp(Socket), jid:encode(JID)]),
 		    {ok, State2};
 		deny ->
-		    ejabberd_hooks:run(forbidden_session_hook, LServer, [JID]),
+		    ejabberd_hooks:run(forbidden_session_hook, LServer,State, [JID]),
 		    ?WARNING_MSG("(~ts) Forbidden c2s session for ~ts",
 				 [xmpp_socket:pp(Socket), jid:encode(JID)]),
 		    Txt = ?T("Access denied by service policy"),
