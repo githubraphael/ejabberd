@@ -19,7 +19,7 @@
 
 -export([mod_opt_type/1, mod_options/1, mod_doc/0, depends/2]).
 -export([on_user_send_packet/1, reject_unauthenticated_packet/2, process_terminated/2]).
--export([c2s_session_opened/1, c2s_session_resumed/1,c2s_handle_info/2,c2s_closed/2]).
+-export([c2s_session_opened/1, c2s_session_resumed/1, c2s_handle_info/2, c2s_closed/2]).
 -export([init/1, terminate/2]).
 
 -include("logger.hrl").
@@ -34,6 +34,7 @@
 -type c2s_state() :: ejabberd_c2s:state().
 -type state() :: xmpp_stream_in:state().
 -export_type([state/0]).
+-import(string, [substr/3]).
 
 depends(_Host, _Opts) ->
   [].
@@ -41,7 +42,7 @@ depends(_Host, _Opts) ->
 start(Host, Opts) ->
   Mod = gen_mod:db_mod(Opts, ?MODULE),
   Mod:init(Host, Opts),
-%%  init_cache(Mod, Host, Opts),
+  init_cache(Mod, Host, Opts),
   %% 回调相关的代码
   ejabberd_hooks:add(user_send_packet, Host, ?MODULE, on_user_send_packet, 0),
   ejabberd_hooks:add(c2s_auth_result, Host, ?MODULE, c2s_auth_result, 100),
@@ -84,7 +85,8 @@ reload(Host, NewOpts, OldOpts) ->
   end.
 
 init_cache(Mod, Host, Opts) ->
-  true.
+  ets_cache:new(mod_ack_prefix_cache),
+  ets_cache:insert(mod_ack_prefix_cache,prefix, mod_ack_opt:prefix(Opts)).
 
 %%% 在线发送消息的时候，回执给发送消息的人员
 %%% 收到消息有正常的收发消息，也有客户端发送个服务端的ack消息；而这个ack消息是通过user_send_packet进来的。
@@ -106,9 +108,14 @@ on_user_send_packet({#message{to = To, from = From, type = Type, id = ID, body =
   ?DEBUG("mod_stanza_ack a message has been sent with the following packet:~n ~p", [fxml:element_to_binary(xmpp:encode(Packet))]),
   %%% 给消息发送人，发送消息回执
   BodyTxt = xmpp:get_text(Body),
-  case chr(BodyTxt, ${) == 1 of
+  %% 读取需要ack的配置内容
+  {_,AckMsgPrefix} = ets_cache:lookup(mod_ack_prefix_cache, prefix),
+  ?INFO_MSG("AckMsgPrefix  ~p", [AckMsgPrefix]),
+%%  AckMsgPrefix = <<"^(\{|a|c|p|k)">>,
+%%  case chr(BodyTxt, ${) == 1 of
+  case re:run(binary_to_list(BodyTxt), AckMsgPrefix, [{capture, none}]) of
     %% 服务端接收到普通消息，发送ack消息
-    true ->
+    match ->
       To2 = jid:encode(From),
       From2 = list_to_binary("1000@localhost"),
       %% 即使为群消息，也是通过1对1消息，发送确认
@@ -139,14 +146,14 @@ on_user_send_packet({#message{to = To, from = From, type = Type, id = ID, body =
       of
         Msg ->
           ?INFO_MSG("Acked to Sending Side: Xml -> ~p -> To: ~p", [
-            fxml:element_to_binary(xmpp:encode(Msg)), To
+            fxml:element_to_binary(xmpp:encode(Msg)), fxml:element_to_binary(To)
           ]),
           ejabberd_router:route(Msg)
       catch
         _:{xmpp_codec, Why} ->
           {error, xmpp:format_error(Why)}
       end;
-    _ -> ?DEBUG("current message is not valid message.", [])
+    nomatch -> ?INFO_MSG("current message is not valid message.", [])
   end,
   {Packet, C2SState}.
 
@@ -197,7 +204,7 @@ reject_unauthenticated_packet(#{ip := {Addr, _}, lserver := LServer} = State, _P
 
 %% 授权通过
 -spec c2s_session_opened(c2s_state()) -> c2s_state().
-c2s_session_opened(#{ip := {Addr, _},user := U, server := LServer, resource := R} = State) ->
+c2s_session_opened(#{ip := {Addr, _}, user := U, server := LServer, resource := R} = State) ->
   JID = jid:make(U, LServer, R),
   Time = current_time(),
   Mod = gen_mod:db_mod(LServer, ?MODULE),
@@ -218,35 +225,35 @@ forbidden_session_hook(#{ip := {Addr, _}, user := U, server := LServer, resource
   Time = current_time(),
   Mod = gen_mod:db_mod(LServer, ?MODULE),
   Mod:add_event(LServer, list_to_binary([jid:encode(JID)]), client_info(State, Addr), <<"C2s session forbidden">>, integer_to_binary(Time))
-  .
+.
 
-c2s_handle_info(#{mgmt_ack_timer := TRef,server := LServer,ip := {Addr, _}, jid := JID, mod := Mod} = State,
+c2s_handle_info(#{mgmt_ack_timer := TRef, server := LServer, ip := {Addr, _}, jid := JID} = State,
     {timeout, TRef, ack_timeout}) ->
   Time = current_time(),
   Mod = gen_mod:db_mod(LServer, ?MODULE),
   Mod:add_event(LServer, list_to_binary([jid:encode(JID)]), client_info(State, Addr), <<"Timed out waiting for stream management acknowledgement">>, integer_to_binary(Time)),
   transition_to_pending(State, ack_timeout),
-  {stop, State};
-c2s_handle_info(#{mgmt_state := pending, lang := Lang,server := LServer,
-  mgmt_pending_timer := TRef,ip := {Addr, _}, jid := JID, mod := Mod} = State,
+  State;
+c2s_handle_info(#{mgmt_state := pending, lang := Lang, server := LServer,
+  mgmt_pending_timer := TRef, ip := {Addr, _}, jid := JID} = State,
     {timeout, TRef, pending_timeout}) ->
   Time = current_time(),
   Mod = gen_mod:db_mod(LServer, ?MODULE),
   Mod:add_event(LServer, list_to_binary([jid:encode(JID)]), client_info(State, Addr), <<"Timed out waiting for resumption of stream">>, integer_to_binary(Time)),
-  {stop, State};
-c2s_handle_info(State, {_Ref, {resume, #{ip := {Addr, _},jid := JID,server := LServer} = OldState}}) ->
+  State;
+c2s_handle_info(State, {_Ref, {resume, #{ip := {Addr, _}, jid := JID, server := LServer} = OldState}}) ->
   %% This happens if the resume_session/1 request timed out; the new session
   %% now receives the late response.
   Time = current_time(),
   Mod = gen_mod:db_mod(LServer, ?MODULE),
   Mod:add_event(LServer, list_to_binary([jid:encode(JID)]), client_info(State, Addr), <<"Timed out waiting for resumption of stream">>, integer_to_binary(Time)),
-  {stop, State};
+  State;
 c2s_handle_info(State, {timeout, _, Timeout}) when Timeout == ack_timeout;
   Timeout == pending_timeout ->
   %% Late arrival of an already cancelled timer: we just ignore it.
   %% This might happen because misc:cancel_timer/1 doesn't guarantee
   %% timer cancellation in the case when p1_server is used.
-  {stop, State};
+  State;
 c2s_handle_info(State, _) ->
   State.
 
@@ -254,12 +261,12 @@ c2s_handle_info(State, _) ->
 transition_to_pending(#{mgmt_state := active, mod := Mod,
   mgmt_timeout := 0} = State, _Reason) ->
   State;
-transition_to_pending(#{mgmt_state := active,ip := {Addr, _},jid := JID, socket := Socket,
+transition_to_pending(#{mgmt_state := active, ip := {Addr, _}, jid := JID, socket := Socket,
   lserver := LServer, mgmt_timeout := Timeout} = State,
     Reason) ->
   Time = current_time(),
   Mod = gen_mod:db_mod(LServer, ?MODULE),
-  Mod:add_event(LServer, list_to_binary([jid:encode(JID)]), client_info(State, Addr), list_to_binary([<<"Closing c2s connection,waiting ">>,integer_to_binary(Timeout div 1000),<<" seconds for stream resumption">>]), integer_to_binary(Time)),
+  Mod:add_event(LServer, list_to_binary([jid:encode(JID)]), client_info(State, Addr), list_to_binary([<<"Closing c2s connection -> waiting ">>, integer_to_binary(Timeout div 1000), <<" seconds for stream resumption">>]), integer_to_binary(Time)),
   State;
 transition_to_pending(State, _Reason) ->
   State.
@@ -290,10 +297,10 @@ format_reason(_, _) ->
 
 -spec c2s_stream_started(ejabberd_c2s:state(), stream_start())
       -> ejabberd_c2s:state() | {stop, ejabberd_c2s:state()}.
-c2s_stream_started(#{ip := {Addr, _}, user := User,stream_authenticated := Authenticated, lserver := LServer} = State, Stream2) ->
+c2s_stream_started(#{ip := {Addr, _}, user := User, stream_authenticated := Authenticated, lserver := LServer} = State, Stream2) ->
   Mod = gen_mod:db_mod(LServer, ?MODULE),
   Time = current_time(),
-  Mod:add_event(LServer, list_to_binary([User,<<"@">>,LServer]), client_info(State, Addr), list_to_binary([<<"Stream started -> Authenticated:">>,atom_to_binary(Authenticated)]), integer_to_binary(Time)),
+  Mod:add_event(LServer, list_to_binary([User, <<"@">>, LServer]), client_info(State, Addr), list_to_binary([<<"Stream started -> Authenticated:">>, atom_to_binary(Authenticated)]), integer_to_binary(Time)),
   State.
 
 c2s_closed(State, {stream, _}) ->
@@ -322,10 +329,13 @@ process_terminated(State, _Reason) ->
   State.
 
 mod_opt_type(db_type) ->
-  econf:shaper().
+  econf:shaper();
+mod_opt_type(prefix) ->
+  econf:either(auto, econf:string()).
 
 mod_options(_Host) ->
-  [{db_type, db_type}].
+  [{db_type, db_type},
+    {prefix, prefix}].
 
 mod_doc() ->
   #{

@@ -3,11 +3,18 @@
 
 -module(mod_ack_opt).
 
--export([access_max_user_messages/1]).
+-export([db_type/1]).
+-export([prefix/1]).
 
--spec access_max_user_messages(gen_mod:opts() | global | binary()) -> atom() | [ejabberd_shaper:shaper_rule()].
-access_max_user_messages(Opts) when is_map(Opts) ->
-    gen_mod:get_opt(access_max_user_messages, Opts);
-access_max_user_messages(Host) ->
-    gen_mod:get_module_opt(Host, mod_message_ack, access_max_user_messages).
+-spec db_type(gen_mod:opts() | global | binary()) -> atom() | [ejabberd_shaper:shaper_rule()].
+db_type(Opts) when is_map(Opts) ->
+    gen_mod:get_opt(db_type, Opts);
+db_type(Host) ->
+    gen_mod:get_module_opt(Host, mod_ack, db_type).
+
+-spec prefix(gen_mod:opts() | global | binary()) -> 'auto' | 'prefix' | string().
+prefix(Opts) when is_map(Opts) ->
+    gen_mod:get_opt(prefix, Opts);
+prefix(Host) ->
+    gen_mod:get_module_opt(Host, mod_ack, prefix).
 
