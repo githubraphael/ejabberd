@@ -110,7 +110,7 @@ on_user_send_packet({#message{to = To, from = From, type = Type, id = ID, body =
   BodyTxt = xmpp:get_text(Body),
   %% 读取需要ack的配置内容
   {_,AckMsgPrefix} = ets_cache:lookup(mod_ack_prefix_cache, prefix),
-  ?INFO_MSG("AckMsgPrefix  ~p", [AckMsgPrefix]),
+  ?INFO_MSG("ack message`s regex is ->  ~p", [AckMsgPrefix]),
 %%  AckMsgPrefix = <<"^(\{|a|c|p|k)">>,
 %%  case chr(BodyTxt, ${) == 1 of
   case re:run(binary_to_list(BodyTxt), AckMsgPrefix, [{capture, none}]) of
@@ -146,7 +146,7 @@ on_user_send_packet({#message{to = To, from = From, type = Type, id = ID, body =
       of
         Msg ->
           ?INFO_MSG("Acked to Sending Side: Xml -> ~p -> To: ~p", [
-            fxml:element_to_binary(xmpp:encode(Msg)), fxml:element_to_binary(To)
+            fxml:element_to_binary(xmpp:encode(Msg)), To
           ]),
           ejabberd_router:route(Msg)
       catch
