@@ -19,7 +19,7 @@
 
 -export([mod_opt_type/1, mod_options/1, mod_doc/0, depends/2]).
 -export([on_user_send_packet/1, reject_unauthenticated_packet/2, process_terminated/2]).
--export([c2s_session_opened/1, c2s_session_resumed/1,c2s_handle_info/2]).
+-export([c2s_session_opened/1, c2s_session_resumed/1,c2s_handle_info/2,c2s_closed/2]).
 -export([init/1, terminate/2]).
 
 -include("logger.hrl").
@@ -51,6 +51,7 @@ start(Host, Opts) ->
   ejabberd_hooks:add(forbidden_session_hook, Host, ?MODULE, forbidden_session_hook, 100),
   ejabberd_hooks:add(c2s_handle_info, Host, ?MODULE, c2s_handle_info, 50),
   ejabberd_hooks:add(c2s_stream_started, Host, ?MODULE, c2s_stream_started, 100),
+  ejabberd_hooks:add(c2s_closed, Host, ?MODULE, c2s_closed, 50),
   ejabberd_hooks:add(c2s_terminated, Host, ?MODULE, process_terminated, 100),
   ejabberd_hooks:add(c2s_unauthenticated_packet, Host, ?MODULE, reject_unauthenticated_packet, 100).
 %%  gen_mod:start_child(?MODULE, Host, Opts).
@@ -65,6 +66,7 @@ stop(Host) ->
   ejabberd_hooks:delete(forbidden_session_hook, Host, ?MODULE, forbidden_session_hook, 100),
   ejabberd_hooks:delete(c2s_handle_info, Host, ?MODULE, c2s_handle_info, 50),
   ejabberd_hooks:delete(c2s_stream_started, Host, ?MODULE, c2s_stream_started, 100),
+  ejabberd_hooks:delete(c2s_closed, Host, ?MODULE, c2s_closed, 50),
   ejabberd_hooks:delete(c2s_terminated, Host, ?MODULE,
     process_terminated, 100),
   ejabberd_hooks:delete(c2s_unauthenticated_packet, Host, ?MODULE,
@@ -223,6 +225,7 @@ c2s_handle_info(#{mgmt_ack_timer := TRef,server := LServer,ip := {Addr, _}, jid 
   Time = current_time(),
   Mod = gen_mod:db_mod(LServer, ?MODULE),
   Mod:add_event(LServer, list_to_binary([jid:encode(JID)]), client_info(State, Addr), <<"Timed out waiting for stream management acknowledgement">>, integer_to_binary(Time)),
+  transition_to_pending(State, ack_timeout),
   {stop, State};
 c2s_handle_info(#{mgmt_state := pending, lang := Lang,server := LServer,
   mgmt_pending_timer := TRef,ip := {Addr, _}, jid := JID, mod := Mod} = State,
@@ -245,6 +248,20 @@ c2s_handle_info(State, {timeout, _, Timeout}) when Timeout == ack_timeout;
   %% timer cancellation in the case when p1_server is used.
   {stop, State};
 c2s_handle_info(State, _) ->
+  State.
+
+-spec transition_to_pending(state(), _) -> state().
+transition_to_pending(#{mgmt_state := active, mod := Mod,
+  mgmt_timeout := 0} = State, _Reason) ->
+  State;
+transition_to_pending(#{mgmt_state := active,ip := {Addr, _},jid := JID, socket := Socket,
+  lserver := LServer, mgmt_timeout := Timeout} = State,
+    Reason) ->
+  Time = current_time(),
+  Mod = gen_mod:db_mod(LServer, ?MODULE),
+  Mod:add_event(LServer, list_to_binary([jid:encode(JID)]), client_info(State, Addr), list_to_binary([<<"Closing c2s connection,waiting ">>,integer_to_binary(Timeout div 1000),<<" seconds for stream resumption">>]), integer_to_binary(Time)),
+  State;
+transition_to_pending(State, _Reason) ->
   State.
 
 client_info(State, Addr) ->
@@ -277,6 +294,14 @@ c2s_stream_started(#{ip := {Addr, _}, user := User,stream_authenticated := Authe
   Mod = gen_mod:db_mod(LServer, ?MODULE),
   Time = current_time(),
   Mod:add_event(LServer, list_to_binary([User,<<"@">>,LServer]), client_info(State, Addr), list_to_binary([<<"Stream started -> Authenticated:">>,atom_to_binary(Authenticated)]), integer_to_binary(Time)),
+  State.
+
+c2s_closed(State, {stream, _}) ->
+  State;
+c2s_closed(#{mgmt_state := active} = State, Reason) ->
+  transition_to_pending(State, Reason),
+  State;
+c2s_closed(State, _Reason) ->
   State.
 
 process_terminated(#{ip := {Addr, _}, sid := SID, jid := JID, user := U, server := S, resource := R} = State,
