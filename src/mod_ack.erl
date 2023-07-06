@@ -20,11 +20,12 @@
 -export([mod_opt_type/1, mod_options/1, mod_doc/0, depends/2]).
 -export([on_user_send_packet/1, reject_unauthenticated_packet/2, process_terminated/2]).
 -export([c2s_session_opened/1, c2s_session_resumed/1, c2s_handle_info/2, c2s_closed/2]).
--export([init/1, terminate/2]).
+-export([init/1, terminate/2, get_commands_spec/0]).
+-export([demo_api/1,user_resources/2]).
 
 -include("logger.hrl").
 -include_lib("xmpp/include/xmpp.hrl").
-
+-include("ejabberd_commands.hrl").
 -include("ejabberd_http.hrl").
 -include("translate.hrl").
 
@@ -43,6 +44,8 @@ start(Host, Opts) ->
   Mod = gen_mod:db_mod(Opts, ?MODULE),
   Mod:init(Host, Opts),
   init_cache(Mod, Host, Opts),
+  %  注册api定义
+  ejabberd_commands:register_commands(?MODULE, get_commands_spec()),
   %% 回调相关的代码
   ejabberd_hooks:add(user_send_packet, Host, ?MODULE, on_user_send_packet, 0),
   ejabberd_hooks:add(c2s_auth_result, Host, ?MODULE, c2s_auth_result, 100),
@@ -58,6 +61,13 @@ start(Host, Opts) ->
 %%  gen_mod:start_child(?MODULE, Host, Opts).
 
 stop(Host) ->
+  % 取消api定义
+  case gen_mod:is_loaded_elsewhere(Host, ?MODULE) of
+      false ->
+          ejabberd_commands:unregister_commands(get_commands_spec());
+      true ->
+          ok
+  end,
   %% 回调相关的代码
   ejabberd_hooks:delete(user_send_packet, Host, ?MODULE, on_user_send_packet, 0),
   ejabberd_hooks:delete(c2s_auth_result, Host, ?MODULE, c2s_auth_result, 100),
@@ -102,7 +112,8 @@ on_user_send_packet({#iq{to = To, from = From} = Packet, C2SState}) ->
 %%  ?DEBUG("mod_stanza_ack a iq has been sent to: ~p", [To]),
   ?DEBUG("mod_stanza_ack a iq has been sent with the following packet:~n ~p", [fxml:element_to_binary(xmpp:encode(Packet))]),
   {Packet, C2SState};
-on_user_send_packet({#message{to = To, from = From, type = Type, id = ID, body = Body} = Packet, C2SState}) ->
+on_user_send_packet({#message{to= #jid{luser = ToUser,
+				    lserver = ToServer} = To, from = From, type = Type, id = ID, body = Body} = Packet, C2SState}) ->
 %%  ?DEBUG("mod_stanza_ack a message has been sent coming from: ~p", [From]),
 %%  ?DEBUG("mod_stanza_ack a message has been sent to: ~p", [To]),
   ?DEBUG("mod_stanza_ack a message has been sent with the following packet:~n ~p", [fxml:element_to_binary(xmpp:encode(Packet))]),
@@ -110,18 +121,24 @@ on_user_send_packet({#message{to = To, from = From, type = Type, id = ID, body =
   BodyTxt = xmpp:get_text(Body),
   %% 读取需要ack的配置内容
   {_,AckMsgPrefix} = ets_cache:lookup(mod_ack_prefix_cache, prefix),
-  ?INFO_MSG("ack message`s regex is ->  ~p", [AckMsgPrefix]),
+  ?DEBUG("ack message`s regex is ->  ~p", [AckMsgPrefix]),
 %%  AckMsgPrefix = <<"^(\{|a|c|p|k)">>,
 %%  case chr(BodyTxt, ${) == 1 of
   case re:run(binary_to_list(BodyTxt), AckMsgPrefix, [{capture, none}]) of
     %% 服务端接收到普通消息，发送ack消息
     match ->
       To2 = jid:encode(From),
+      DeliveredFrom = jid:encode(To),
       From2 = list_to_binary("1000@localhost"),
       %% 即使为群消息，也是通过1对1消息，发送确认
       Type2 = <<"chat">>,
       %%atom_to_binary(Type)
       CodecOpts = ejabberd_config:codec_options(),
+      %% 如果接收用户在线；不管对方是否接收到，均设置为已发送；因为这个可靠性，由服务器负责。
+      Delivered = case length(user_resources(ToUser, ToServer))  of
+	      N when N =< 0 -> <<"false">>;
+        N -> <<"true">>
+      end,
       try
         xmpp:decode(
           #xmlel{
@@ -134,6 +151,11 @@ on_user_send_packet({#message{to = To, from = From, type = Type, id = ID, body =
             ],
             children =
             [
+              #xmlel{name = <<"delivered">>,
+                attrs = [
+                  {<<"from">>, DeliveredFrom}
+                ],
+                children = [{xmlcdata, Delivered}]},
               #xmlel{
                 name = <<"body">>,
                 children = [{xmlcdata, list_to_binary(["k", ID])}]
@@ -145,7 +167,7 @@ on_user_send_packet({#message{to = To, from = From, type = Type, id = ID, body =
         )
       of
         Msg ->
-          ?INFO_MSG("Acked to Sending Side: Xml -> ~p -> To: ~p", [
+          ?DEBUG("Acked to Sending Side: Xml -> ~p -> To: ~p", [
             fxml:element_to_binary(xmpp:encode(Msg)), To
           ]),
           ejabberd_router:route(Msg)
@@ -153,7 +175,7 @@ on_user_send_packet({#message{to = To, from = From, type = Type, id = ID, body =
         _:{xmpp_codec, Why} ->
           {error, xmpp:format_error(Why)}
       end;
-    nomatch -> ?INFO_MSG("current message is not valid message.", [])
+    nomatch -> ?DEBUG("current message is not valid message.", [])
   end,
   {Packet, C2SState}.
 
@@ -183,6 +205,10 @@ terminate(_Reason, #state{host = Host}) ->
 %%%===================================================================
 %%% API
 %%%===================================================================
+-spec user_resources(binary(), binary()) -> [binary()].
+user_resources(User, Server) ->
+    ejabberd_sm:get_user_resources(User, Server).
+
 -spec c2s_auth_result(ejabberd_c2s:state(), true | {false, binary()}, binary())
       -> ejabberd_c2s:state() | {stop, ejabberd_c2s:state()}.
 c2s_auth_result(#{sasl_mech := Mech} = State, {false, _}, _User)
@@ -342,3 +368,28 @@ mod_doc() ->
     desc =>
     ?T("This is an example module.")
   }.
+
+%%%
+%%% ejabberd commands
+%%%
+
+demo_api(ServiceArg) ->
+    ?INFO_MSG("----------> ~p", [ServiceArg]),
+    % throw({error, "Internal error"}).
+    "xxxxx".
+
+get_commands_spec() ->
+    [
+     #ejabberd_commands{name = user_is_active, tags = [muc],
+		       desc = "获取某个用户最后通讯时间；如果时间逐个短，表示当前用户仍然在线！",
+           policy = admin,
+		       module = ?MODULE, function = demo_api,
+		       args_desc = ["MUC service, or 'global' for all"],
+		       args_example = ["args_example"],
+		       result_desc = "result_desc",
+		       result_example = ["result_example"],
+		       args = [{name, binary}],
+		       args_rename = [{host, service}],
+          %  result = {res, string}}
+		       result = {res, rescode}}
+    ].
